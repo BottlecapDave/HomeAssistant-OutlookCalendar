@@ -1,0 +1,14 @@
+{
+    "domain": "outlook_calendar",
+    "name": "Outlook Calendar",
+    "config_flow": true,
+    "documentation": "https://www.home-assistant.io/components/outlook-calendar",
+    "requirements": [
+      "pypoint==1.1.1"
+    ],
+    "dependencies": [
+    ],
+    "codeowners": [
+      "@BottlecapDave"
+    ]
+  }
