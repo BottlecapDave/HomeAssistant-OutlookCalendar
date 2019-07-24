@@ -12,9 +12,10 @@ from homeassistant import config_entries
 from homeassistant.components.http import HomeAssistantView
 from homeassistant.core import callback
 
-from .const import AUTHORITY_URL, CLIENT_ID, CLIENT_SECRET, DOMAIN, SCOPES
+from .const import AUTHORITY_URL, CLIENT_ID, CLIENT_SECRET, DOMAIN, REDIRECT_URL, SCOPES
 
-AUTH_CALLBACK_PATH = '/api/outlook-calendar'
+import requests
+
 AUTH_CALLBACK_NAME = 'api:outlook-calendar'
 
 DATA_FLOW_IMPL = 'outlook_calendar_flow_implementation'
@@ -115,11 +116,10 @@ class OutlookCalendarFlowHandler(config_entries.ConfigFlow):
         """Create Outlook Calendar session and get authorization url."""
         flow = self.hass.data[DATA_FLOW_IMPL][self.flow_impl]
         client_id = flow[CLIENT_ID]
-        client_secret = flow[CLIENT_SECRET]
         authorize_url = '{0}{1}'.format(AUTHORITY_URL, '/common/oauth2/v2.0/authorize?{0}')
 
         params = { 'client_id': client_id,
-            'redirect_uri': 'http://localhost:8123/{0]'.format(AUTH_CALLBACK_PATH),
+            'redirect_uri': REDIRECT_URL,
             'response_type': 'code',
             'scope': ' '.join(str(i) for i in SCOPES)
         }
@@ -149,33 +149,53 @@ class OutlookCalendarFlowHandler(config_entries.ConfigFlow):
         flow = self.hass.data[DATA_FLOW_IMPL][DOMAIN]
         client_id = flow[CLIENT_ID]
         client_secret = flow[CLIENT_SECRET]
-        point_session = PointSession(
-            client_id,
-            client_secret=client_secret,
-        )
 
         token = await self.hass.async_add_executor_job(
-            point_session.get_access_token, code)
+            self._async_get_access_token, code)
             
         _LOGGER.debug("Got new token")
 
-        if not point_session.is_authorized:
+        if token is None:
             _LOGGER.error('Authentication Error')
             return self.async_abort(reason='auth_error')
 
-        _LOGGER.info('Successfully authenticated Point')
-        user_email = point_session.user().get('email') or ""
+        _LOGGER.info('Successfully authenticated Outlook Calendar')
 
         return self.async_create_entry(
-            title=user_email,
+            title='Microsoft Account',
             data={
-                'token': token,
+                'token': token['access_token'],
+                'refresh_token': token['refresh_token'],
+                'expires_in': token['expires_in'],
                 'refresh_args': {
                     'client_id': client_id,
                     'client_secret': client_secret
                 }
             },
         )
+    
+    async def _async_get_access_token(self, code):
+        """Get access token."""
+        flow = self.hass.data[DATA_FLOW_IMPL][DOMAIN]
+        client_id = flow[CLIENT_ID]
+        client_secret = flow[CLIENT_SECRET]
+
+        # Build the post form for the token request
+        post_data = { 'grant_type': 'authorization_code',
+                'code': code,
+                'redirect_uri': REDIRECT_URL,
+                'scope': ' '.join(str(i) for i in SCOPES),
+                'client_id': client_id,
+                'client_secret': client_secret
+              }
+
+        r = requests.post('{0}{1}'.format(AUTHORITY_URL, '/common/oauth2/v2.0/token'), data = post_data)
+
+        try:
+            return r.json()
+        except:
+            _LOGGER.error('Authentication Error: Failed to get access token')
+            return None
 
 
 class OutlookCalendarAuthCallbackView(HomeAssistantView):

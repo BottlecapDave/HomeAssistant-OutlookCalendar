@@ -133,20 +133,6 @@ async def async_unload_entry(hass: HomeAssistantType, entry: ConfigEntry):
     return True
 
 
-async def handle_webhook(hass, webhook_id, request):
-    """Handle webhook callback."""
-    try:
-        data = await request.json()
-        _LOGGER.debug("Webhook %s: %s", webhook_id, data)
-    except ValueError:
-        return None
-
-    if isinstance(data, dict):
-        data['webhook_id'] = webhook_id
-        async_dispatcher_send(hass, SIGNAL_WEBHOOK, data, data.get('hook_id'))
-    hass.bus.async_fire(EVENT_RECEIVED, data)
-
-
 class MinutPointClient():
     """Get the latest data and update the states."""
 
