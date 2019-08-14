@@ -6,7 +6,7 @@ import voluptuous as vol
 
 from homeassistant import config_entries
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import CONF_TOKEN, CONF_WEBHOOK_ID
+from homeassistant.const import CONF_TOKEN
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.dispatcher import (
     async_dispatcher_connect, async_dispatcher_send)
@@ -16,16 +16,49 @@ from homeassistant.helpers.typing import HomeAssistantType
 from homeassistant.util.dt import as_local, parse_datetime, utc_from_timestamp
 
 from . import config_flow  # noqa  pylint_disable=unused-import
-from .const import (
-    CONF_WEBHOOK_URL, DOMAIN)
+from .const import ( 
+    DOMAIN,
+    
+    CONF_CLIENT_ID,
+    CONF_CLIENT_SECRET,
+    CONF_TRACK_NEW,
+
+    CONF_CAL_ID,
+    CONF_DEVICE_ID,
+    CONF_NAME,
+    CONF_ENTITIES,
+    CONF_TRACK,
+    CONF_SEARCH,
+    CONF_OFFSET,
+    CONF_IGNORE_AVAILABILITY,
+    CONF_MAX_RESULTS,
+
+    DEFAULT_CONF_TRACK_N,EW,EVENT_CALENDAR_ID,
+    EVENT_DESCRIPTION,
+    EVENT_END_CO,NFEVENT_END_DATE,
+    EVENT_END_DATETIME,e"
+    EVENT_INEVENT_IN_DAYS,
+    EVENT_IN_WEEKS,
+    EVENT_START_CONF,
+    EVENT_START_DATE,
+    EVENT_START_DATETIME,
+    EVENT_SUMMARY,
+    EVENT_TYPES_CONF,
+
+    GROUP_NAME_ALL_CALENDARS,
+
+    SERVICE_SCAN_CALENDARS,
+    SERVICE_FOUND_CALENDARS,
+    SERVICE_ADD_EVENT,
+
+    DATA_INDEX,
+
+    YAML_DEVICES,
+
+    SCOPES
+)
 
 _LOGGER = logging.getLogger(__name__)
-
-CONF_CLIENT_ID = 'client_id'
-CONF_CLIENT_SECRET = 'client_secret'
-
-DATA_CONFIG_ENTRY_LOCK = 'point_config_entry_lock'
-CONFIG_ENTRY_IS_SETUP = 'point_config_entry_is_setup'
 
 CONFIG_SCHEMA = vol.Schema(
     {
@@ -38,16 +71,20 @@ CONFIG_SCHEMA = vol.Schema(
     extra=vol.ALLOW_EXTRA,
 )
 
-
 async def async_setup(hass, config):
     """Set up the Outlook Calendar component."""
     if DOMAIN not in config:
         return True
 
+    if DATA_INDEX not in hass.data:
+        hass.data[DATA_INDEX] = {}
+
     conf = config[DOMAIN]
 
     config_flow.register_flow_implementation(
-        hass, DOMAIN, conf[CONF_CLIENT_ID],
+        hass, 
+        DOMAIN, 
+        conf[CONF_CLIENT_ID],
         conf[CONF_CLIENT_SECRET])
 
     hass.async_create_task(
@@ -58,27 +95,26 @@ async def async_setup(hass, config):
 
     return True
 
-
 async def async_setup_entry(hass: HomeAssistantType, entry: ConfigEntry):
-    """Set up Point from a config entry."""
+    """Set up Outlook calendar from a config entry."""
     from pypoint import PointSession
 
     def token_saver(token):
-        _LOGGER.debug('Saving updated token')
+        _LOGGER.debug("Saving updated token")
         entry.data[CONF_TOKEN] = token
         hass.config_entries.async_update_entry(entry, data={**entry.data})
 
     # Force token update.
-    entry.data[CONF_TOKEN]['expires_in'] = -1
+    entry.data[CONF_TOKEN]["expires_in"] = -1
     session = PointSession(
-        entry.data['refresh_args']['client_id'],
+        entry.data["refresh_args"]["client_id"],
         token=entry.data[CONF_TOKEN],
-        auto_refresh_kwargs=entry.data['refresh_args'],
+        auto_refresh_kwargs=entry.data["refresh_args"],
         token_saver=token_saver,
     )
 
     if not session.is_authorized:
-        _LOGGER.error('Authentication Error')
+        _LOGGER.error("Authentication Error")
         return False
 
     hass.data[DATA_CONFIG_ENTRY_LOCK] = asyncio.Lock()
@@ -91,230 +127,129 @@ async def async_setup_entry(hass: HomeAssistantType, entry: ConfigEntry):
 
     return True
 
+def setup_services(hass, hass_config, track_new_found_calendars, calendar_service):
+    """Set up the service listeners."""
 
-async def async_setup_webhook(hass: HomeAssistantType, entry: ConfigEntry,
-                              session):
-    """Set up a webhook to handle binary sensor events."""
-    if CONF_WEBHOOK_ID not in entry.data:
-        entry.data[CONF_WEBHOOK_ID] = \
-            hass.components.webhook.async_generate_id()
-        entry.data[CONF_WEBHOOK_URL] = \
-            hass.components.webhook.async_generate_url(
-                entry.data[CONF_WEBHOOK_ID])
-        _LOGGER.info('Registering new webhook at: %s',
-                     entry.data[CONF_WEBHOOK_URL])
-        hass.config_entries.async_update_entry(
-            entry, data={
-                **entry.data,
-            })
-    await hass.async_add_executor_job(
-        session.update_webhook,
-        entry.data[CONF_WEBHOOK_URL],
-        entry.data[CONF_WEBHOOK_ID],
-        ['*'])
+    def _found_calendar(call):
+        """Check if we know about a calendar and generate PLATFORM_DISCOVER."""
+        calendar = get_calendar_info(hass, call.data)
+        if hass.data[DATA_INDEX].get(calendar[CONF_CAL_ID], None) is not None:
+            return
 
-    hass.components.webhook.async_register(
-        DOMAIN, 'Point', entry.data[CONF_WEBHOOK_ID], handle_webhook)
+        hass.data[DATA_INDEX].update({calendar[CONF_CAL_ID]: calendar})
+
+        update_config(
+            hass.config.path(YAML_DEVICES), hass.data[DATA_INDEX][calendar[CONF_CAL_ID]]
+        )
+
+        discovery.load_platform(
+            hass,
+            "calendar",
+            DOMAIN,
+            hass.data[DATA_INDEX][calendar[CONF_CAL_ID]],
+            hass_config,
+        )
+
+    hass.services.register(DOMAIN, SERVICE_FOUND_CALENDARS, _found_calendar)
+
+    def _scan_for_calendars(service):
+        """Scan for new calendars."""
+        service = calendar_service.get()
+        cal_list = service.calendarList()
+        calendars = cal_list.list().execute()["items"]
+        for calendar in calendars:
+            calendar["track"] = track_new_found_calendars
+            hass.services.call(DOMAIN, SERVICE_FOUND_CALENDARS, calendar)
+
+    hass.services.register(DOMAIN, SERVICE_SCAN_CALENDARS, _scan_for_calendars)
 
 
-async def async_unload_entry(hass: HomeAssistantType, entry: ConfigEntry):
-    """Unload a config entry."""
-    hass.components.webhook.async_unregister(entry.data[CONF_WEBHOOK_ID])
-    session = hass.data[DOMAIN].pop(entry.entry_id)
-    await hass.async_add_executor_job(session.remove_webhook)
+def do_setup(hass, hass_config, config):
+    """Run the setup after we have everything configured."""
+    # Load calendars the user has configured
+    hass.data[DATA_INDEX] = load_config(hass.config.path(YAML_DEVICES))
 
-    if not hass.data[DOMAIN]:
-        hass.data.pop(DOMAIN)
+    conf = config[DOMAIN]
+    client_id = conf[CONF_CLIENT_ID]
+    client_secret = conf[CONF_CLIENT_SECRET]
+    
+    auth = MicrosoftAuthClient(client_id, client_secret, SCOPES) 
+    calendar_service = GoogleCalendarService(hass.config.path(TOKEN_FILE))
+    track_new_found_calendars = convert(
+        config.get(CONF_TRACK_NEW), bool, DEFAULT_CONF_TRACK_NEW
+    )
 
-    for component in ('binary_sensor', 'sensor'):
-        await hass.config_entries.async_forward_entry_unload(
-            entry, component)
+    setup_services(hass, hass_config, track_new_found_calendars, calendar_service)
 
+    for calendar in hass.data[DATA_INDEX].values():
+        discovery.load_platform(hass, "calendar", DOMAIN, calendar, hass_config)
+
+    # Look for any new calendars
+    hass.services.call(DOMAIN, SERVICE_SCAN_CALENDARS, None)
     return True
 
 
-class MinutPointClient():
-    """Get the latest data and update the states."""
+class GoogleCalendarService:
+    """Calendar service interface to Google."""
 
-    def __init__(self, hass: HomeAssistantType, config_entry: ConfigEntry,
-                 session):
-        """Initialize the Minut data object."""
-        self._known_devices = set()
-        self._known_homes = set()
-        self._hass = hass
-        self._config_entry = config_entry
-        self._is_available = True
-        self._client = session
+    def __init__(self, token_file):
+        """Init the Google Calendar service."""
+        self.token_file = token_file
 
-        async_track_time_interval(self._hass, self.update, SCAN_INTERVAL)
+    def get(self):
+        """Get the calendar service from the storage file token."""
+        import httplib2
+        from oauth2client.file import Storage
+        from googleapiclient import discovery as google_discovery
 
-    async def update(self, *args):
-        """Periodically poll the cloud for current state."""
-        await self._sync()
-
-    async def _sync(self):
-        """Update local list of devices."""
-        if not await self._hass.async_add_executor_job(
-                self._client.update) and self._is_available:
-            self._is_available = False
-            _LOGGER.warning("Device is unavailable")
-            return
-
-        async def new_device(device_id, component):
-            """Load new device."""
-            config_entries_key = '{}.{}'.format(component, DOMAIN)
-            async with self._hass.data[DATA_CONFIG_ENTRY_LOCK]:
-                if config_entries_key not in self._hass.data[
-                        CONFIG_ENTRY_IS_SETUP]:
-                    await self._hass.config_entries.async_forward_entry_setup(
-                        self._config_entry, component)
-                    self._hass.data[CONFIG_ENTRY_IS_SETUP].add(
-                        config_entries_key)
-
-            async_dispatcher_send(
-                self._hass, POINT_DISCOVERY_NEW.format(component, DOMAIN),
-                device_id)
-
-        self._is_available = True
-        for home_id in self._client.homes:
-            if home_id not in self._known_homes:
-                await new_device(home_id, 'alarm_control_panel')
-                self._known_homes.add(home_id)
-        for device in self._client.devices:
-            if device.device_id not in self._known_devices:
-                for component in ('sensor', 'binary_sensor'):
-                    await new_device(device.device_id, component)
-                self._known_devices.add(device.device_id)
-        async_dispatcher_send(self._hass, SIGNAL_UPDATE_ENTITY)
-
-    def device(self, device_id):
-        """Return device representation."""
-        return self._client.device(device_id)
-
-    def is_available(self, device_id):
-        """Return device availability."""
-        return device_id in self._client.device_ids
-
-    def remove_webhook(self):
-        """Remove the session webhook."""
-        return self._client.remove_webhook()
-
-    @property
-    def homes(self):
-        """Return known homes."""
-        return self._client.homes
-
-    def alarm_disarm(self, home_id):
-        """Send alarm disarm command."""
-        return self._client.alarm_disarm(home_id)
-
-    def alarm_arm(self, home_id):
-        """Send alarm arm command."""
-        return self._client.alarm_arm(home_id)
+        credentials = Storage(self.token_file).get()
+        http = credentials.authorize(httplib2.Http())
+        service = google_discovery.build(
+            "calendar", "v3", http=http, cache_discovery=False
+        )
+        return service
 
 
-class MinutPointEntity(Entity):
-    """Base Entity used by the sensors."""
-
-    def __init__(self, point_client, device_id, device_class):
-        """Initialize the entity."""
-        self._async_unsub_dispatcher_connect = None
-        self._client = point_client
-        self._id = device_id
-        self._name = self.device.name
-        self._device_class = device_class
-        self._updated = utc_from_timestamp(0)
-        self._value = None
-
-    def __str__(self):
-        """Return string representation of device."""
-        return "MinutPoint {}".format(self.name)
-
-    async def async_added_to_hass(self):
-        """Call when entity is added to hass."""
-        _LOGGER.debug('Created device %s', self)
-        self._async_unsub_dispatcher_connect = async_dispatcher_connect(
-            self.hass, SIGNAL_UPDATE_ENTITY, self._update_callback)
-        await self._update_callback()
-
-    async def async_will_remove_from_hass(self):
-        """Disconnect dispatcher listener when removed."""
-        if self._async_unsub_dispatcher_connect:
-            self._async_unsub_dispatcher_connect()
-
-    async def _update_callback(self):
-        """Update the value of the sensor."""
-        pass
-
-    @property
-    def available(self):
-        """Return true if device is not offline."""
-        return self._client.is_available(self.device_id)
-
-    @property
-    def device(self):
-        """Return the representation of the device."""
-        return self._client.device(self.device_id)
-
-    @property
-    def device_class(self):
-        """Return the device class."""
-        return self._device_class
-
-    @property
-    def device_id(self):
-        """Return the id of the device."""
-        return self._id
-
-    @property
-    def device_state_attributes(self):
-        """Return status of device."""
-        attrs = self.device.device_status
-        attrs['last_heard_from'] = \
-            as_local(self.last_update).strftime("%Y-%m-%d %H:%M:%S")
-        return attrs
-
-    @property
-    def device_info(self):
-        """Return a device description for device registry."""
-        device = self.device.device
-        return {
-            'connections': {('mac', device['device_mac'])},
-            'identifieres': device['device_id'],
-            'manufacturer': 'Minut',
-            'model': 'Point v{}'.format(device['hardware_version']),
-            'name': device['description'],
-            'sw_version': device['firmware']['installed'],
-            'via_device': (DOMAIN, device['home']),
+def get_calendar_info(hass, calendar):
+    """Convert data from Google into DEVICE_SCHEMA."""
+    calendar_info = DEVICE_SCHEMA(
+        {
+            CONF_CAL_ID: calendar["id"],
+            CONF_ENTITIES: [
+                {
+                    CONF_TRACK: calendar["track"],
+                    CONF_NAME: calendar["summary"],
+                    CONF_DEVICE_ID: generate_entity_id(
+                        "{}", calendar["summary"], hass=hass
+                    ),
+                }
+            ],
         }
+    )
+    return calendar_info
 
-    @property
-    def name(self):
-        """Return the display name of this device."""
-        return "{} {}".format(self._name, self.device_class.capitalize())
 
-    @property
-    def is_updated(self):
-        """Return true if sensor have been updated."""
-        return self.last_update > self._updated
+def load_config(path):
+    """Load the outlook_calendar_devices.yaml."""
+    calendars = {}
+    try:
+        with open(path) as file:
+            data = yaml.safe_load(file)
+            for calendar in data:
+                try:
+                    calendars.update({calendar[CONF_CAL_ID]: DEVICE_SCHEMA(calendar)})
+                except VoluptuousError as exception:
+                    # keep going
+                    _LOGGER.warning("Calendar Invalid Data: %s", exception)
+    except FileNotFoundError:
+        # When YAML file could not be loaded/did not contain a dict
+        return {}
 
-    @property
-    def last_update(self):
-        """Return the last_update time for the device."""
-        last_update = parse_datetime(self.device.last_update)
-        return last_update
+    return calendars
 
-    @property
-    def should_poll(self):
-        """No polling needed for point."""
-        return False
 
-    @property
-    def unique_id(self):
-        """Return the unique id of the sensor."""
-        return 'point.{}-{}'.format(self._id, self.device_class)
-
-    @property
-    def value(self):
-        """Return the sensor value."""
-        return self._value
+def update_config(path, calendar):
+    """Write the outlook_calendar_devices.yaml."""
+    with open(path, "a") as out:
+        out.write("\n")
+        yaml.dump([calendar], out, default_flow_style=False)

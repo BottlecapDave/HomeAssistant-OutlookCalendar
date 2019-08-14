@@ -25,8 +25,8 @@
       "already_setup": "You can only configure a Outlook account.",
       "external_setup": "Outlook successfully configured from another flow.",
       "no_flows": "You need to configure Outlook before being able to authenticate with it. [Please read the instructions](https://www.home-assistant.io/components/outlook-calendar/).",
-      "access_token_timeout": "Timeout generating access token.",
-      "access_token_fail": "Unknown error generating an access token.",
+      "authorize_url_timeout": "Timeout generating authorize url.",
+      "authorize_url_fail": "Unknown error generating an authorize url.",
       "auth_error": "Failed to obtain token"
     }
   }

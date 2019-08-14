@@ -4,10 +4,9 @@
     "config_flow": true,
     "documentation": "https://www.home-assistant.io/components/outlook-calendar",
     "requirements": [
-      "pypoint==1.1.1"
+      "aiohttp==3.5.4"
     ],
-    "dependencies": [
-    ],
+    "dependencies": [],
     "codeowners": [
       "@BottlecapDave"
     ]

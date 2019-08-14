@@ -14,9 +14,7 @@ from homeassistant.core import callback
 
 from .const import AUTHORITY_URL, CLIENT_ID, CLIENT_SECRET, DOMAIN, REDIRECT_URL, SCOPES
 
-import requests
-
-AUTH_CALLBACK_NAME = 'api:outlook-calendar'
+from .clients import MicrosoftAuthClient
 
 DATA_FLOW_IMPL = 'outlook_calendar_flow_implementation'
 
@@ -95,40 +93,29 @@ class OutlookCalendarFlowHandler(config_entries.ConfigFlow):
         errors = {}
 
         if user_input is not None:
-            errors['base'] = 'follow_link'
+            try:
+                with async_timeout.timeout(10):
+                   return await self.async_step_code(user_input["code"])
+            except asyncio.TimeoutError:
+                return self.async_abort(reason='access_token_timeout')
+            except Exception:  # pylint: disable=broad-except
+                _LOGGER.exception("Unexpected error generating access token")
+                return self.async_abort(reason='access_token_fail')
 
-        try:
-            with async_timeout.timeout(10):
-                url = await self._get_authorization_url()
-        except asyncio.TimeoutError:
-            return self.async_abort(reason='authorize_url_timeout')
-        except Exception:  # pylint: disable=broad-except
-            _LOGGER.exception("Unexpected error generating auth url")
-            return self.async_abort(reason='authorize_url_fail')
+        flow = self.hass.data[DATA_FLOW_IMPL][self.flow_impl]
+        client_id = flow[CLIENT_ID]
+        client_secret = flow[CLIENT_SECRET]
+        
+        auth = MicrosoftAuthClient(client_id, client_secret, SCOPES) 
+        
+        url = auth.get_authorization_url(REDIRECT_URL)
 
         return self.async_show_form(
             step_id='auth',
             description_placeholders={'authorization_url': url},
+            data_schema=vol.Schema({vol.Required("code"): str}),
             errors=errors,
         )
-
-    async def _get_authorization_url(self):
-        """Create Outlook Calendar session and get authorization url."""
-        flow = self.hass.data[DATA_FLOW_IMPL][self.flow_impl]
-        client_id = flow[CLIENT_ID]
-        authorize_url = '{0}{1}'.format(AUTHORITY_URL, '/common/oauth2/v2.0/authorize?{0}')
-
-        params = { 'client_id': client_id,
-            'redirect_uri': REDIRECT_URL,
-            'response_type': 'code',
-            'scope': ' '.join(str(i) for i in SCOPES)
-        }
-
-        signin_url = authorize_url.format(urlencode(params))
-
-        self.hass.http.register_view(OutlookCalendarAuthCallbackView())
-
-        return signin_url
 
     async def async_step_code(self, code=None):
         """Received code for authentication."""
@@ -150,10 +137,10 @@ class OutlookCalendarFlowHandler(config_entries.ConfigFlow):
         client_id = flow[CLIENT_ID]
         client_secret = flow[CLIENT_SECRET]
 
-        token = await self.hass.async_add_executor_job(
-            self._async_get_access_token, code)
+        auth = MicrosoftAuthClient(client_id, client_secret, SCOPES) 
+        token = await auth.async_get_access_token(code)
             
-        _LOGGER.debug("Got new token")
+        _LOGGER.debug('Got new token: {0}'.format(token))
 
         if token is None:
             _LOGGER.error('Authentication Error')
@@ -164,56 +151,8 @@ class OutlookCalendarFlowHandler(config_entries.ConfigFlow):
         return self.async_create_entry(
             title='Microsoft Account',
             data={
-                'token': token['access_token'],
-                'refresh_token': token['refresh_token'],
-                'expires_in': token['expires_in'],
-                'refresh_args': {
-                    'client_id': client_id,
-                    'client_secret': client_secret
-                }
+                DATA_TOKEN: token['access_token'],
+                DATA_REFRESH_TOKEN: token['refresh_token'],
+                DATA_EXPIRES_IN: token['expires_in']
             },
         )
-    
-    async def _async_get_access_token(self, code):
-        """Get access token."""
-        flow = self.hass.data[DATA_FLOW_IMPL][DOMAIN]
-        client_id = flow[CLIENT_ID]
-        client_secret = flow[CLIENT_SECRET]
-
-        # Build the post form for the token request
-        post_data = { 'grant_type': 'authorization_code',
-                'code': code,
-                'redirect_uri': REDIRECT_URL,
-                'scope': ' '.join(str(i) for i in SCOPES),
-                'client_id': client_id,
-                'client_secret': client_secret
-              }
-
-        r = requests.post('{0}{1}'.format(AUTHORITY_URL, '/common/oauth2/v2.0/token'), data = post_data)
-
-        try:
-            return r.json()
-        except:
-            _LOGGER.error('Authentication Error: Failed to get access token')
-            return None
-
-
-class OutlookCalendarAuthCallbackView(HomeAssistantView):
-    """Minut Authorization Callback View."""
-
-    requires_auth = False
-    url = AUTH_CALLBACK_PATH
-    name = AUTH_CALLBACK_NAME
-
-    @staticmethod
-    async def get(request):
-        """Receive authorization code."""
-        hass = request.app['hass']
-        if 'code' in request.query:
-            hass.async_create_task(
-                hass.config_entries.flow.async_init(
-                    DOMAIN,
-                    context={'source': 'code'},
-                    data=request.query['code'],
-                ))
-        return "OK!"
