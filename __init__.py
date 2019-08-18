@@ -125,6 +125,10 @@ async def async_setup_entry(hass: HomeAssistantType, entry: ConfigEntry):
     hass.data.setdefault(DOMAIN, {}).update({entry.entry_id: client})
     hass.async_create_task(client.update())
 
+    config = hass.config[DOMAIN]
+
+    do_setup(hass, hass.config, config)
+
     return True
 
 def setup_services(hass, hass_config, track_new_found_calendars, calendar_service):
