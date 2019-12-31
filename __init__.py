@@ -1,133 +1,191 @@
-"""Support for Outlook Calendar."""
-import asyncio
+"""Support for Google - Calendar Event Devices."""
+from datetime import datetime, timedelta
 import logging
+import os
 
+from googleapiclient import discovery as google_discovery
+from aiohttp.web import Response
+import httplib2
+from oauth2client.client import (
+    FlowExchangeError,
+    OAuth2DeviceCodeError,
+    OAuth2WebServerFlow,
+)
+from oauth2client.file import Storage
 import voluptuous as vol
+from voluptuous.error import Error as VoluptuousError
+import yaml
 
-from homeassistant import config_entries
-from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import CONF_TOKEN
-from homeassistant.helpers import config_validation as cv
-from homeassistant.helpers.dispatcher import (
-    async_dispatcher_connect, async_dispatcher_send)
-from homeassistant.helpers.entity import Entity
-from homeassistant.helpers.event import async_track_time_interval
-from homeassistant.helpers.typing import HomeAssistantType
-from homeassistant.util.dt import as_local, parse_datetime, utc_from_timestamp
+from homeassistant.helpers import discovery
+import homeassistant.helpers.config_validation as cv
+from homeassistant.helpers.entity import generate_entity_id
+from homeassistant.helpers.event import track_time_change
+from homeassistant.util import convert, dt
+from homeassistant.util.json import save_json
+from homeassistant.core import callback
+from homeassistant.components.http import HomeAssistantView
 
-from . import config_flow  # noqa  pylint_disable=unused-import
-from .const import ( 
+_LOGGER = logging.getLogger(__name__)
+
+from .const import (
     DOMAIN,
-    
+    ENTITY_ID_FORMAT,
     CONF_CLIENT_ID,
     CONF_CLIENT_SECRET,
     CONF_TRACK_NEW,
-
     CONF_CAL_ID,
     CONF_DEVICE_ID,
     CONF_NAME,
     CONF_ENTITIES,
     CONF_TRACK,
-    CONF_SEARCH,
+    CONF_FILTER,
     CONF_OFFSET,
     CONF_IGNORE_AVAILABILITY,
     CONF_MAX_RESULTS,
-
-    DEFAULT_CONF_TRACK_N,EW,EVENT_CALENDAR_ID,
-    EVENT_DESCRIPTION,
-    EVENT_END_CO,NFEVENT_END_DATE,
-    EVENT_END_DATETIME,e"
-    EVENT_INEVENT_IN_DAYS,
-    EVENT_IN_WEEKS,
-    EVENT_START_CONF,
-    EVENT_START_DATE,
-    EVENT_START_DATETIME,
-    EVENT_SUMMARY,
-    EVENT_TYPES_CONF,
-
+    DEFAULT_CONF_TRACK_NEW,
+    DEFAULT_CONF_OFFSET,
+    NOTIFICATION_ID,
+    NOTIFICATION_TITLE,
     GROUP_NAME_ALL_CALENDARS,
-
     SERVICE_SCAN_CALENDARS,
     SERVICE_FOUND_CALENDARS,
     SERVICE_ADD_EVENT,
-
     DATA_INDEX,
-
     YAML_DEVICES,
+    TOKEN_FILE,
 
-    SCOPES
+    AUTH_CALLBACK_PATH,
+    AUTH_REQUEST_SCOPE,
+    SCOPES,
+    AUTHORIZATION_BASE_URL,
+    TOKEN_URL
 )
 
-_LOGGER = logging.getLogger(__name__)
+from .client import ( 
+    setup_outh_client, 
+    OutlookCalendarClient
+)
 
 CONFIG_SCHEMA = vol.Schema(
     {
-        DOMAIN:
-        vol.Schema({
-            vol.Required(CONF_CLIENT_ID): cv.string,
-            vol.Required(CONF_CLIENT_SECRET): cv.string,
-        })
+        DOMAIN: vol.Schema(
+            {
+                vol.Required(CONF_CLIENT_ID): cv.string,
+                vol.Required(CONF_CLIENT_SECRET): cv.string,
+                vol.Optional(CONF_TRACK_NEW): cv.boolean,
+            }
+        )
     },
     extra=vol.ALLOW_EXTRA,
 )
 
-async def async_setup(hass, config):
-    """Set up the Outlook Calendar component."""
-    if DOMAIN not in config:
-        return True
+_SINGLE_CALSEARCH_CONFIG = vol.Schema(
+    {
+        vol.Required(CONF_NAME): cv.string,
+        vol.Required(CONF_DEVICE_ID): cv.string,
+        vol.Optional(CONF_IGNORE_AVAILABILITY, default=True): cv.boolean,
+        vol.Optional(CONF_OFFSET): cv.string,
+        vol.Optional(CONF_FILTER): cv.string,
+        vol.Optional(CONF_TRACK): cv.boolean,
+        vol.Optional(CONF_MAX_RESULTS): cv.positive_int,
+    }
+)
 
-    if DATA_INDEX not in hass.data:
-        hass.data[DATA_INDEX] = {}
+DEVICE_SCHEMA = vol.Schema(
+    {
+        vol.Required(CONF_CAL_ID): cv.string,
+        vol.Required(CONF_ENTITIES, None): vol.All(
+            cv.ensure_list, [_SINGLE_CALSEARCH_CONFIG]
+        ),
+    },
+    extra=vol.ALLOW_EXTRA,
+)
 
-    conf = config[DOMAIN]
+def request_configuration(hass, config, authorization_url):
+    configurator = hass.components.configurator
+    hass.data[DOMAIN] = configurator.request_config(
+        "Outlook Calendar",
+        lambda _: None,
+        link_name="Link Outlook Calendar account",
+        link_url=authorization_url,
+        description="To link your Outlook Calendar account, "
+                    "click the link, login, and authorize:",
+        submit_caption="I authorized successfully",
+    )
 
-    config_flow.register_flow_implementation(
-        hass, 
-        DOMAIN, 
-        conf[CONF_CLIENT_ID],
-        conf[CONF_CLIENT_SECRET])
+def do_authentication(hass, hass_config, config):
+    
+    _LOGGER.info("Do authentication")
 
-    hass.async_create_task(
-        hass.config_entries.flow.async_init(
-            DOMAIN,
-            context={'source': config_entries.SOURCE_IMPORT},
-        ))
+    oauth, config_file = setup_outh_client(hass, config)
+
+    if not config_file:
+        _LOGGER.info(f"Redirect URI: {oauth.redirect_uri}")
+        # NOTE: request extra scope for the offline access and avoid
+        # exception related to differences between requested and granted scopes
+        oauth.scope = AUTH_REQUEST_SCOPE
+        authorization_url, state = oauth.authorization_url(AUTHORIZATION_BASE_URL)
+        oauth.scope = SCOPES
+        request_configuration(hass, config, authorization_url)
+
+    hass.http.register_view(
+        OutlookCalendarAuthCallbackView(oauth, config.get(CONF_CLIENT_SECRET), [hass, hass_config, config])
+    )
 
     return True
 
-async def async_setup_entry(hass: HomeAssistantType, entry: ConfigEntry):
-    """Set up Outlook calendar from a config entry."""
-    from pypoint import PointSession
+class OutlookCalendarAuthCallbackView(HomeAssistantView):
 
-    def token_saver(token):
-        _LOGGER.debug("Saving updated token")
-        entry.data[CONF_TOKEN] = token
-        hass.config_entries.async_update_entry(entry, data={**entry.data})
+    url = AUTH_CALLBACK_PATH
+    name = "auth:outlook_calendar:callback"
+    requires_auth = False
 
-    # Force token update.
-    entry.data[CONF_TOKEN]["expires_in"] = -1
-    session = PointSession(
-        entry.data["refresh_args"]["client_id"],
-        token=entry.data[CONF_TOKEN],
-        auto_refresh_kwargs=entry.data["refresh_args"],
-        token_saver=token_saver,
-    )
+    def __init__(self, oauth, client_secret, setup_args):
+        self.oauth = oauth
+        self.client_secret = client_secret
+        self.setup_args = setup_args
 
-    if not session.is_authorized:
-        _LOGGER.error("Authentication Error")
-        return False
+    @callback
+    def get(self, request):
+        hass = request.app["hass"]
+        data = request.query
 
-    hass.data[DATA_CONFIG_ENTRY_LOCK] = asyncio.Lock()
-    hass.data[CONFIG_ENTRY_IS_SETUP] = set()
+        html_response = """<html><head><title>Microsoft Outlook Calendar authorization</title></head>
+                           <body><h1>{}</h1></body></html>"""
 
-    await async_setup_webhook(hass, entry, session)
-    client = MinutPointClient(hass, entry, session)
-    hass.data.setdefault(DOMAIN, {}).update({entry.entry_id: client})
-    hass.async_create_task(client.update())
+        if data.get("code") is None:
+            error_msg = "No code returned from Microsoft Graph Auth API"
+            _LOGGER.error(error_msg)
+            return Response(text=html_response.format(error_msg), content_type="text/html")
 
-    config = hass.config[DOMAIN]
+        token = self.oauth.fetch_token(TOKEN_URL, client_secret=self.client_secret, code=data.get("code"))
 
-    do_setup(hass, hass.config, config)
+        save_json(hass.config.path(TOKEN_FILE), token)
+
+        response_message = """Outlook Calendar has been successfully authorized!
+                              You can close this window now!"""
+
+        hass.async_add_job(do_setup, *self.setup_args)
+
+        return Response(
+            text=html_response.format(response_message), content_type="text/html"
+        )
+
+def setup(hass, config):
+    """Set up the Google platform."""
+    if DATA_INDEX not in hass.data:
+        hass.data[DATA_INDEX] = {}
+
+    conf = config.get(DOMAIN, {})
+    if not conf:
+        # component is set up by tts platform
+        return True
+
+    token_file = hass.config.path(TOKEN_FILE)
+    if not os.path.isfile(token_file):
+        do_authentication(hass, config, conf)
+    else:
+        do_setup(hass, config, conf)
 
     return True
 
@@ -158,31 +216,31 @@ def setup_services(hass, hass_config, track_new_found_calendars, calendar_servic
 
     def _scan_for_calendars(service):
         """Scan for new calendars."""
-        service = calendar_service.get()
-        cal_list = service.calendarList()
-        calendars = cal_list.list().execute()["items"]
+        _LOGGER.info("Scan for calendars")
+        calendars = calendar_service.get_calendars()
         for calendar in calendars:
             calendar["track"] = track_new_found_calendars
             hass.services.call(DOMAIN, SERVICE_FOUND_CALENDARS, calendar)
 
     hass.services.register(DOMAIN, SERVICE_SCAN_CALENDARS, _scan_for_calendars)
 
+    return True
+
 
 def do_setup(hass, hass_config, config):
     """Run the setup after we have everything configured."""
+
+    _LOGGER.info("Do setup")
+
     # Load calendars the user has configured
     hass.data[DATA_INDEX] = load_config(hass.config.path(YAML_DEVICES))
 
-    conf = config[DOMAIN]
-    client_id = conf[CONF_CLIENT_ID]
-    client_secret = conf[CONF_CLIENT_SECRET]
-    
-    auth = MicrosoftAuthClient(client_id, client_secret, SCOPES) 
-    calendar_service = GoogleCalendarService(hass.config.path(TOKEN_FILE))
+    oauth, config_file = setup_outh_client(hass, config)
+
+    calendar_service = OutlookCalendarClient(client=oauth, logger=_LOGGER)
     track_new_found_calendars = convert(
         config.get(CONF_TRACK_NEW), bool, DEFAULT_CONF_TRACK_NEW
     )
-
     setup_services(hass, hass_config, track_new_found_calendars, calendar_service)
 
     for calendar in hass.data[DATA_INDEX].values():
@@ -192,28 +250,6 @@ def do_setup(hass, hass_config, config):
     hass.services.call(DOMAIN, SERVICE_SCAN_CALENDARS, None)
     return True
 
-
-class GoogleCalendarService:
-    """Calendar service interface to Google."""
-
-    def __init__(self, token_file):
-        """Init the Google Calendar service."""
-        self.token_file = token_file
-
-    def get(self):
-        """Get the calendar service from the storage file token."""
-        import httplib2
-        from oauth2client.file import Storage
-        from googleapiclient import discovery as google_discovery
-
-        credentials = Storage(self.token_file).get()
-        http = credentials.authorize(httplib2.Http())
-        service = google_discovery.build(
-            "calendar", "v3", http=http, cache_discovery=False
-        )
-        return service
-
-
 def get_calendar_info(hass, calendar):
     """Convert data from Google into DEVICE_SCHEMA."""
     calendar_info = DEVICE_SCHEMA(
@@ -222,9 +258,9 @@ def get_calendar_info(hass, calendar):
             CONF_ENTITIES: [
                 {
                     CONF_TRACK: calendar["track"],
-                    CONF_NAME: calendar["summary"],
+                    CONF_NAME: calendar["name"],
                     CONF_DEVICE_ID: generate_entity_id(
-                        "{}", calendar["summary"], hass=hass
+                        "{}", calendar["name"], hass=hass
                     ),
                 }
             ],
@@ -234,7 +270,7 @@ def get_calendar_info(hass, calendar):
 
 
 def load_config(path):
-    """Load the outlook_calendar_devices.yaml."""
+    """Load the google_calendar_devices.yaml."""
     calendars = {}
     try:
         with open(path) as file:
@@ -253,7 +289,7 @@ def load_config(path):
 
 
 def update_config(path, calendar):
-    """Write the outlook_calendar_devices.yaml."""
+    """Write the google_calendar_devices.yaml."""
     with open(path, "a") as out:
         out.write("\n")
         yaml.dump([calendar], out, default_flow_style=False)

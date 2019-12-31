@@ -1,13 +1,12 @@
 {
     "domain": "outlook_calendar",
     "name": "Outlook Calendar",
-    "config_flow": true,
-    "documentation": "https://www.home-assistant.io/components/outlook-calendar",
+    "documentation": "https://github.com/BottlecapDave/HomeAssistant-OutlookCalendar",
     "requirements": [
-      "aiohttp==3.5.4"
+        "requests_oauthlib==1.2.0"
     ],
     "dependencies": [],
     "codeowners": [
-      "@BottlecapDave"
+        "@BottlecapDave"
     ]
   }
