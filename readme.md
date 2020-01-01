@@ -14,9 +14,9 @@ In order to use this component, you'll need to create an app that the component 
 
 1. Open a browser and navigate to the Azure Active Directory admin center. Login using a personal account (aka: Microsoft Account) or Work or School Account.
 
-2. Select Azure Active Directory in the left-hand navigation, then select App registrations under Manage.
+2. Select `Azure Active Directory` in the left-hand navigation, then select `App registrations` under `Manage`.
 
-3. Select New registration. On the Register an application page, set the values as follows.
+3. Select `New registration`. On the `Register an application` page, set the values as follows.
 
     a. Set Name to `Home Assistant`
 
@@ -36,7 +36,7 @@ In order to use this component, you'll need to create an app that the component 
 
 ### Custom Component
 
-Add the contents of the [src](./src) folder with the name `outlook_calendar` into your [config directory](https://developers.home-assistant.io/docs/en/creating_component_loading.html).
+Add the [src](./src) folder with the name `outlook_calendar` into your [config directory](https://developers.home-assistant.io/docs/en/creating_component_loading.html).
 
 ### Configuration.yaml
 
@@ -99,7 +99,7 @@ What is the name of your sensor that you’ll see in the frontend.
 
 Should we create a sensor (true) or ignore it (false). 
 
-The default value is true.
+The default value is equal to the `track_new_calendar` configuration.
 
 **filter** - string/optional
 
