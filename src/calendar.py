@@ -157,7 +157,7 @@ class OutlookCalendarData:
 
     def _outlook_event_to_ha_event(self, event):
         data = {
-            "description": event["subject"],
+            "message": event["subject"],
             "start": event["start"],
             "end": event["end"],
             "location": event["location"]["displayName"],
