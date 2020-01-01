@@ -6,16 +6,22 @@ import logging
 from httplib2 import ServerNotFoundError  # pylint: disable=import-error
 
 from homeassistant.components.calendar import (
+    PLATFORM_SCHEMA,
     ENTITY_ID_FORMAT,
     CalendarEventDevice,
     calculate_offset,
     is_offset_reached,
     get_date
 )
+import voluptuous as vol
+import homeassistant.helpers.config_validation as cv
+
 from homeassistant.helpers.entity import generate_entity_id
 from homeassistant.util import Throttle, dt
 
 from .const import (
+    DOMAIN,
+
     CONF_CAL_ID,
     CONF_DEVICE_ID,
     CONF_ENTITIES,
@@ -27,6 +33,9 @@ from .const import (
     CONF_TRACK,
     DEFAULT_CONF_OFFSET,
     TOKEN_FILE,
+
+    CONF_CLIENT_ID,
+    CONF_CLIENT_SECRET
 )
 
 from .client import (
@@ -50,7 +59,12 @@ def setup_platform(hass, config, add_entities, disc_info=None):
     if not any(data[CONF_TRACK] for data in disc_info[CONF_ENTITIES]):
         return
 
-    oauth, config_file = setup_outh_client(hass, config)
+    # Get our client credentials from our hass data as for some reason I can't seem to access
+    # the configuration directly
+    client_id = hass.data[DOMAIN][CONF_CLIENT_ID]
+    client_secret = hass.data[DOMAIN][CONF_CLIENT_SECRET]
+
+    oauth, config_file = setup_outh_client(hass, client_id, client_secret)
 
     calendar_service = OutlookCalendarClient(client=oauth, logger=_LOGGER)
     entities = []

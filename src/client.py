@@ -10,9 +10,6 @@ from requests.packages.urllib3.util.retry import Retry
 from homeassistant.util import dt
 
 from .const import (
-    CONF_CLIENT_ID,
-    CONF_CLIENT_SECRET,
-
     SCOPES,
 
     TOKEN_FILE,
@@ -23,27 +20,33 @@ from .const import (
 CONF_CAL_ID = "id"
 CONF_CAL_NAME = "name"
 
-def setup_outh_client(hass, config):
+def setup_outh_client(hass, client_id, client_secret):
     config_path = hass.config.path(TOKEN_FILE)
     config_file = None
     if os.path.isfile(config_path):
         config_file = load_json(config_path)
 
     def token_saver(token):
-        save_json(hass.config.path(TOKEN_FILE), token)
+        save_json(config_path, token)
 
-    # TODO: create a separate HTTP client class
+    if not client_id:
+        raise Exception("Client id is not specified in config")
+    elif not client_secret:
+        raise Exception("Client secret is not specified in config")
+
+    auto_refesh_args = {
+        'client_id': client_id,
+        'client_secret': client_secret
+    }
+
     callback_url = f"{hass.config.api.base_url}{AUTH_CALLBACK_PATH}"
     oauth = OAuth2Session(
-        config.get(CONF_CLIENT_ID),
+        client_id=client_id,
         scope=SCOPES,
         redirect_uri=callback_url,
         token=config_file,
         auto_refresh_url=TOKEN_URL,
-        auto_refresh_kwargs={
-            'client_id': config.get(CONF_CLIENT_ID),
-            'client_secret': config.get(CONF_CLIENT_SECRET),
-        },
+        auto_refresh_kwargs=auto_refesh_args,
         token_updater=token_saver
     )
     retry = Retry(status=3, connect=3, status_forcelist=[500, 502, 503, 504])

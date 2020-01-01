@@ -114,10 +114,8 @@ def request_configuration(hass, config, authorization_url):
     )
 
 def do_authentication(hass, hass_config, config):
-    
-    _LOGGER.info("Do authentication")
 
-    oauth, config_file = setup_outh_client(hass, config)
+    oauth, config_file = setup_outh_client(hass, config.get(CONF_CLIENT_ID), config.get(CONF_CLIENT_SECRET))
 
     if not config_file:
         _LOGGER.info(f"Redirect URI: {oauth.redirect_uri}")
@@ -230,18 +228,22 @@ def setup_services(hass, hass_config, track_new_found_calendars, calendar_servic
 def do_setup(hass, hass_config, config):
     """Run the setup after we have everything configured."""
 
-    _LOGGER.info("Do setup")
-
     # Load calendars the user has configured
     hass.data[DATA_INDEX] = load_config(hass.config.path(YAML_DEVICES))
 
-    oauth, config_file = setup_outh_client(hass, config)
+    oauth, config_file = setup_outh_client(hass, config.get(CONF_CLIENT_ID), config.get(CONF_CLIENT_SECRET))
 
     calendar_service = OutlookCalendarClient(client=oauth, logger=_LOGGER)
     track_new_found_calendars = convert(
         config.get(CONF_TRACK_NEW), bool, DEFAULT_CONF_TRACK_NEW
     )
     setup_services(hass, hass_config, track_new_found_calendars, calendar_service)
+
+    # Set up our client credentials so we can retrieve them in our calendar
+    hass.data[DOMAIN] = {
+        CONF_CLIENT_ID: config.get(CONF_CLIENT_ID),
+        CONF_CLIENT_SECRET: config.get(CONF_CLIENT_SECRET)
+    }
 
     for calendar in hass.data[DATA_INDEX].values():
         discovery.load_platform(hass, "calendar", DOMAIN, calendar, hass_config)

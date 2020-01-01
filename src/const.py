@@ -34,5 +34,5 @@ SERVICE_ADD_EVENT = "add_event"
 
 DATA_INDEX = "outlook_calendars"
 
-YAML_DEVICES = f"{DOMAIN}_calendars.yaml"
+YAML_DEVICES = f"outlook_calendars.yaml"
 TOKEN_FILE = f".{DOMAIN}.token"
